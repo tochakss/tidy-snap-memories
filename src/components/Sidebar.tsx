@@ -2,13 +2,20 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { Camera, FolderOpen, Copy, Sparkles, Upload, Search, Settings, HardDrive } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const navItems = [
+type NavItem = {
+  to: "/" | "/duplicates" | "/curation" | "/publish" | "/search";
+  label: string;
+  icon: typeof FolderOpen;
+  badge?: number;
+};
+
+const navItems: NavItem[] = [
   { to: "/", label: "Library", icon: FolderOpen },
   { to: "/duplicates", label: "Duplicates", icon: Copy, badge: 234 },
   { to: "/curation", label: "Curation", icon: Sparkles },
   { to: "/publish", label: "Publish", icon: Upload },
   { to: "/search", label: "Search", icon: Search },
-] as const;
+];
 
 export function Sidebar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
