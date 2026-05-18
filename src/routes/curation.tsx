@@ -1,12 +1,15 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Sparkles, X, Check, Trash2, Image as ImageIcon, Film,
-  Brain, AlertCircle, Zap, Eye, EyeOff,
+  Brain, AlertCircle, Zap, Eye, EyeOff, RotateCcw, Loader2,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { MemoryScore } from "@/components/MemoryScore";
-import { type ScoredMedia } from "@/lib/api";
+import {
+  checkIncomplete, resumeAIScan, getAIProgress,
+  type ScoredMedia, type AIScanProgress, type IncompleteCheck,
+} from "@/lib/api";
 
 export const Route = createFileRoute("/curation")({
   head: () => ({
@@ -70,7 +73,13 @@ function CurationPage() {
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
   const [showFilter, setShowFilter] = useState<ShowFilter>("all");
 
-  // Load persisted data on mount
+  // Incomplete-scan state
+  const [incompleteInfo, setIncompleteInfo] = useState<IncompleteCheck | null>(null);
+  const [resumeProgress, setResumeProgress] = useState<AIScanProgress | null>(null);
+  const [isResuming, setIsResuming] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Load persisted data on mount; if empty, check for an incomplete scan
   useEffect(() => {
     const raw = typeof window !== "undefined" ? localStorage.getItem("ai_scan_results") : null;
     if (raw) {
@@ -82,6 +91,9 @@ function CurationPage() {
       } catch {
         // ignore corrupt data
       }
+    } else {
+      // No completed scan — check for an incomplete one
+      checkIncomplete().then(setIncompleteInfo).catch(() => {});
     }
     const savedDecisions = typeof window !== "undefined" ? localStorage.getItem("ai_decisions") : null;
     if (savedDecisions) {
@@ -91,7 +103,40 @@ function CurationPage() {
         // ignore
       }
     }
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
+
+  async function handleResume() {
+    setIsResuming(true);
+    try {
+      const res = await resumeAIScan();
+      if (res.status === "no_incomplete_scan") {
+        setIncompleteInfo({ has_incomplete: false });
+        setIsResuming(false);
+        return;
+      }
+      // Poll progress until done
+      pollRef.current = setInterval(async () => {
+        const p = await getAIProgress();
+        setResumeProgress(p);
+        if (p.status === "done") {
+          clearInterval(pollRef.current!);
+          localStorage.setItem("ai_scan_results", JSON.stringify(p.results));
+          const sorted = [...p.results].sort((a, b) => b.memory_score - a.memory_score);
+          setResults(sorted);
+          setSelected(sorted[0] ?? null);
+          setIsResuming(false);
+          setResumeProgress(null);
+          setIncompleteInfo(null);
+        } else if (p.status === "error") {
+          clearInterval(pollRef.current!);
+          setIsResuming(false);
+        }
+      }, 2000);
+    } catch {
+      setIsResuming(false);
+    }
+  }
 
   // Persist decisions + acceptance rate whenever they change
   useEffect(() => {
@@ -124,6 +169,13 @@ function CurationPage() {
   // ── empty state ──────────────────────────────────────────────────────────────
 
   if (results.length === 0) {
+    const resumePct =
+      resumeProgress && resumeProgress.total > 0
+        ? Math.round((resumeProgress.completed / resumeProgress.total) * 100)
+        : incompleteInfo?.has_incomplete && incompleteInfo.total
+          ? Math.round(((incompleteInfo.completed ?? 0) / incompleteInfo.total) * 100)
+          : 0;
+
     return (
       <AppShell>
         <div>
@@ -132,6 +184,67 @@ function CurationPage() {
             The best of your year, automatically.
           </h1>
         </div>
+
+        {/* Incomplete scan detected */}
+        {incompleteInfo?.has_incomplete && (
+          <div className="mt-10 mx-auto max-w-md rounded-2xl border border-border bg-gradient-card p-6">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-warning/15">
+                <AlertCircle className="h-5 w-5 text-warning" />
+              </div>
+              <div>
+                <p className="font-semibold">Scan incomplete</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  A previous scan scored {incompleteInfo.completed ?? 0} of{" "}
+                  {incompleteInfo.total ?? "?"} photos before stopping.
+                  Pick up where it left off.
+                </p>
+              </div>
+            </div>
+
+            {/* Progress bar (shown while resuming) */}
+            {isResuming && (
+              <div className="mt-4">
+                <div className="mb-1.5 flex justify-between text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1.5">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {resumeProgress
+                      ? `Scoring photo ${resumeProgress.completed} of ${resumeProgress.total}…`
+                      : "Resuming…"}
+                  </span>
+                  <span className="font-mono tabular-nums">{resumePct}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-gradient-primary transition-all duration-300"
+                    style={{ width: `${resumePct}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {!isResuming && (
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={handleResume}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-glow-soft transition-smooth hover:scale-[1.02]"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  Resume Scan
+                </button>
+                <button
+                  onClick={() => navigate({ to: "/" })}
+                  className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium transition-smooth hover:bg-accent"
+                >
+                  Start fresh
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* No scan at all */}
+        {!incompleteInfo?.has_incomplete && !isResuming && (
         <div className="mt-20 flex flex-col items-center gap-4 py-16 text-muted-foreground">
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
             <Brain className="h-8 w-8 text-primary" strokeWidth={1.5} />
@@ -150,6 +263,7 @@ function CurationPage() {
             Go to Library
           </button>
         </div>
+        )}
       </AppShell>
     );
   }

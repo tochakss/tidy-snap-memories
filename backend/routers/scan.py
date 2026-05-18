@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from models.media import MediaFile
 from services.scanner import scan_folder
-from services.ai_curator import start_ai_scan, get_progress
+from services.ai_curator import start_ai_scan, get_progress, resume_ai_scan, check_incomplete_scan
 
 router = APIRouter()
 
@@ -57,8 +57,14 @@ class AIScanRequest(BaseModel):
 
 @router.post("/scan/ai")
 def scan_ai(request: AIScanRequest) -> dict:
-    """Start a background AI scan. Returns immediately; poll /scan/ai/progress."""
-    start_ai_scan(request.folder_path, request.provider)
+    """
+    Start a background AI scan. Returns immediately; poll /scan/ai/progress.
+    Returns HTTP 503 if the AI provider (e.g. Ollama model) is not available.
+    """
+    try:
+        start_ai_scan(request.folder_path, request.provider)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"status": "started"}
 
 
@@ -66,3 +72,22 @@ def scan_ai(request: AIScanRequest) -> dict:
 def ai_progress() -> dict:
     """Return current AI scan progress and results (populated when status == 'done')."""
     return get_progress()
+
+
+@router.get("/scan/ai/resume")
+def ai_resume() -> dict:
+    """
+    Resume from scan_progress.json if an incomplete scan exists.
+    Returns {status: 'resumed'|'no_incomplete_scan'|'already_running', completed, total}.
+    Poll /scan/ai/progress after a 'resumed' response.
+    """
+    return resume_ai_scan()
+
+
+@router.get("/scan/ai/has-incomplete")
+def ai_has_incomplete() -> dict:
+    """
+    Check whether scan_progress.json holds an unfinished scan.
+    Returns {has_incomplete: bool, completed, total, folder_path} — never starts anything.
+    """
+    return check_incomplete_scan()

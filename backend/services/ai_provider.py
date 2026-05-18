@@ -84,24 +84,25 @@ def _parse_response(raw: str, path: str) -> PublishResult:
 def _call_ollama(prompt: str, thumb_b64: str) -> str:
     import httpx  # type: ignore
 
-    url = os.getenv("OLLAMA_URL", "http://localhost:11434") + "/api/chat"
-    model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+    url = os.getenv("OLLAMA_URL", "http://localhost:11434") + "/api/generate"
+    model = os.getenv("OLLAMA_MODEL", "moondream:latest")
 
     payload = {
         "model": model,
+        "prompt": prompt,
+        "images": [thumb_b64],
         "stream": False,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-                # Ollama vision models accept images as base64
-                "images": [thumb_b64],
-            }
-        ],
     }
-    r = httpx.post(url, json=payload, timeout=60)
-    r.raise_for_status()
-    return r.json()["message"]["content"]
+    print(f"Sending image to {model}...")
+    try:
+        r = httpx.post(url, json=payload, timeout=30)
+        print(f"Ollama response status: {r.status_code}")
+        print(f"Ollama response: {r.text[:200]}")
+        r.raise_for_status()
+        return r.json()["response"]
+    except Exception as e:
+        print(f"Ollama error: {str(e)}")
+        raise
 
 
 def _call_claude(prompt: str, thumb_b64: str) -> str:
@@ -154,7 +155,7 @@ def _call_grok(prompt: str, thumb_b64: str) -> str:
         ],
         "max_tokens": 512,
     }
-    r = httpx.post(url, json=payload, headers={"Authorization": f"Bearer {api_key}"}, timeout=60)
+    r = httpx.post(url, json=payload, headers={"Authorization": f"Bearer {api_key}"}, timeout=30)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
 
@@ -171,6 +172,7 @@ _PROVIDERS = {
 
 
 def _build_curation_prompt(filename: str) -> str:
+    """Prompt for Claude / Grok — supports system-style framing."""
     return (
         f"You are a photo memory curator. Analyse this photo named '{filename}'. "
         "Respond ONLY with valid JSON (no markdown fences, no extra text) containing exactly these keys: "
@@ -179,6 +181,45 @@ def _build_curation_prompt(filename: str) -> str:
         '"keep" (boolean, true if worth keeping), '
         '"faces_detected" (boolean, true if human faces are clearly visible).'
     )
+
+
+def _build_moondream_prompt() -> str:
+    """Compact prompt for moondream — inline JSON schema, no markdown fences."""
+    return (
+        'Rate this photo for memory value. Reply with JSON only, no markdown backticks: '
+        '{"memory_score": 1-10, "reason": "one sentence", '
+        '"keep": true/false, "faces_detected": true/false}'
+    )
+
+
+def probe_ollama() -> None:
+    """
+    Smoke-test the configured Ollama model with a 1-pixel image.
+    Raises RuntimeError with a pull hint if the model is missing or the
+    server is unreachable.
+    """
+    import httpx  # type: ignore
+
+    model = os.getenv("OLLAMA_MODEL", "moondream:latest")
+    base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    print("Testing Ollama connection...")
+    try:
+        r = httpx.get(f"{base_url}/api/tags", timeout=10)
+        r.raise_for_status()
+        models = r.json().get("models", [])
+        model_names = [m["name"] for m in models]
+        print(f"Models found: {model_names}")
+        if not any("moondream" in name for name in model_names):
+            raise RuntimeError(
+                f"Ollama moondream model not found — run: ollama pull {model}"
+            )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        print(f"Ollama error: {str(exc)}")
+        raise RuntimeError(
+            f"Ollama moondream model not responding — run: ollama pull {model}"
+        ) from exc
 
 
 def _parse_curation(raw: str) -> dict:
@@ -203,7 +244,8 @@ def score_memory(path: str, provider: str = "ollama") -> dict:
     if not p.exists():
         raise FileNotFoundError(f"File not found: {path}")
     thumb_b64 = _thumbnail_b64(p)
-    prompt = _build_curation_prompt(p.name)
+    # moondream expects a compact inline-JSON prompt; other providers get the richer framing
+    prompt = _build_moondream_prompt() if provider == "ollama" else _build_curation_prompt(p.name)
     raw = _PROVIDERS[provider](prompt, thumb_b64)
     return _parse_curation(raw)
 
@@ -233,17 +275,17 @@ def call_ai_text(prompt: str, provider: str = "claude") -> str:
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
-    # Default: Ollama (no images field → text-only)
+    # Default: Ollama text-only via /api/generate (no images field)
     import httpx  # type: ignore
-    url = os.getenv("OLLAMA_URL", "http://localhost:11434") + "/api/chat"
-    model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+    url = os.getenv("OLLAMA_URL", "http://localhost:11434") + "/api/generate"
+    model = os.getenv("OLLAMA_MODEL", "moondream:latest")
     r = httpx.post(
         url,
-        json={"model": model, "stream": False, "messages": [{"role": "user", "content": prompt}]},
-        timeout=60,
+        json={"model": model, "prompt": prompt, "stream": False},
+        timeout=30,
     )
     r.raise_for_status()
-    return r.json()["message"]["content"]
+    return r.json()["response"]
 
 
 def generate_publish_metadata(

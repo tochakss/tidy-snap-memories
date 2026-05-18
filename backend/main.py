@@ -33,4 +33,4 @@ app.include_router(albums.router, prefix="/api", tags=["albums"])
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": "1.0"}

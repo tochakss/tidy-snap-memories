@@ -1,3 +1,16 @@
+import { getCachedMode, detectMode } from "./mode";
+import {
+  getBrowserScanResult,
+  getBrowserObjectUrl,
+  getBrowserAIProgress,
+  browserGetDuplicates,
+  browserDeleteDuplicates,
+  browserStartAIScan,
+} from "./browser_processor";
+
+// Re-export so callers can trigger detection without a separate import.
+export { detectMode } from "./mode";
+
 const BASE = "http://localhost:8000";
 const DUPES_BASE = "http://localhost:8000";
 
@@ -113,6 +126,15 @@ export interface PublishResult {
   suggested_category?: string;
 }
 
+export interface IncompleteCheck {
+  has_incomplete: boolean;
+  completed?: number;
+  total?: number;
+  folder_path?: string;
+}
+
+// ── internal fetch wrapper ─────────────────────────────────────────────────────
+
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
@@ -122,7 +144,13 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ── API functions (auto-routed by mode) ────────────────────────────────────────
+
 export function scanFolder(folderPath: string): Promise<ScanResponse> {
+  if (getCachedMode() === "browser") {
+    const r = getBrowserScanResult();
+    return Promise.resolve(r ?? { folder_path: "__browser__", total_files: 0, media: [] });
+  }
   return api<ScanResponse>(`${BASE}/api/scan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -131,12 +159,18 @@ export function scanFolder(folderPath: string): Promise<ScanResponse> {
 }
 
 export function getDuplicates(folderPath: string): Promise<DuplicatesResponse> {
+  if (getCachedMode() === "browser") {
+    return browserGetDuplicates();
+  }
   return api<DuplicatesResponse>(
     `${DUPES_BASE}/api/duplicates?folder_path=${encodeURIComponent(folderPath)}`,
   );
 }
 
 export function deleteDuplicates(filePaths: string[]): Promise<DeleteResult> {
+  if (getCachedMode() === "browser") {
+    return Promise.resolve(browserDeleteDuplicates(filePaths));
+  }
   return api<DeleteResult>(`${DUPES_BASE}/api/duplicates/delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -148,6 +182,10 @@ export function runAIScan(
   folderPath: string,
   provider: string = "ollama",
 ): Promise<{ status: string }> {
+  if (getCachedMode() === "browser") {
+    browserStartAIScan();
+    return Promise.resolve({ status: "started" });
+  }
   return api(`${BASE}/api/scan/ai`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -156,13 +194,33 @@ export function runAIScan(
 }
 
 export function getAIProgress(): Promise<AIScanProgress> {
+  if (getCachedMode() === "browser") {
+    return Promise.resolve(getBrowserAIProgress());
+  }
   return api<AIScanProgress>(`${BASE}/api/scan/ai/progress`);
+}
+
+export function checkIncomplete(): Promise<IncompleteCheck> {
+  if (getCachedMode() === "browser") {
+    return Promise.resolve({ has_incomplete: false });
+  }
+  return api<IncompleteCheck>(`${BASE}/api/scan/ai/has-incomplete`);
+}
+
+export function resumeAIScan(): Promise<{ status: string; completed?: number; total?: number; folder_path?: string }> {
+  if (getCachedMode() === "browser") {
+    return Promise.resolve({ status: "no_incomplete_scan" });
+  }
+  return api(`${BASE}/api/scan/ai/resume`);
 }
 
 export function generateAlbums(
   folderPath: string,
   options: { provider?: string; useAiNames?: boolean } = {},
 ): Promise<AlbumSuggestion[]> {
+  if (getCachedMode() === "browser") {
+    return Promise.reject(new Error("Album generation requires the local backend."));
+  }
   return api<AlbumSuggestion[]>(`${BASE}/api/albums/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -178,6 +236,9 @@ export function exportAlbums(
   albums: AlbumSuggestion[],
   outputPath: string,
 ): Promise<{ status: string }> {
+  if (getCachedMode() === "browser") {
+    return Promise.reject(new Error("Export requires the local backend."));
+  }
   return api(`${BASE}/api/albums/export`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -194,6 +255,9 @@ export function syncAlbums(
   organizedFolder: string,
   confirmed: boolean = false,
 ): Promise<SyncResult> {
+  if (getCachedMode() === "browser") {
+    return Promise.reject(new Error("Sync requires the local backend."));
+  }
   return api<SyncResult>(`${BASE}/api/albums/sync`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -225,7 +289,10 @@ export function publishVideo(filePath: string, context = ""): Promise<PublishRes
   });
 }
 
-/** Returns the backend URL that serves a local file as an image. */
+/** Serves a local file as an image. In browser mode returns an object URL. */
 export function fileUrl(path: string): string {
+  if (getCachedMode() === "browser") {
+    return getBrowserObjectUrl(path);
+  }
   return `${BASE}/api/file?path=${encodeURIComponent(path)}`;
 }

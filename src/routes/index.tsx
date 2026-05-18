@@ -8,6 +8,7 @@ import { AlbumsPanel } from "@/components/AlbumsPanel";
 import { type Photo } from "@/lib/photos";
 import { scanFolder, getDuplicates, runAIScan, getAIProgress, fileUrl, type MediaFile, type AIScanProgress } from "@/lib/api";
 import { getSettings, type Settings } from "@/lib/settings";
+import { useModeDetecting } from "@/lib/mode";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -81,6 +82,7 @@ type AiPhase = "select" | "running";
 
 function LibraryPage() {
   const navigate = useNavigate();
+  const detecting = useModeDetecting();
   const [settings, setSettings] = useState<Settings>({ name: "", folderPath: "" });
   const [filter, setFilter] = useState<Filter>("all");
   const [aiModalOpen, setAiModalOpen] = useState(false);
@@ -132,17 +134,19 @@ function LibraryPage() {
 
   const firstName = settings.name.split(" ")[0] || "there";
 
+  const queryEnabled = !!settings.folderPath && !detecting;
+
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["scan", settings.folderPath],
     queryFn: () => scanFolder(settings.folderPath),
-    enabled: !!settings.folderPath,
+    enabled: queryEnabled,
   });
 
-  // Same key as the Duplicates page — served from cache if already fetched there.
+  // Same key as Sidebar + Duplicates page — served from cache, no extra fetch.
   const { data: dupData } = useQuery({
     queryKey: ["duplicates", settings.folderPath],
     queryFn: () => getDuplicates(settings.folderPath),
-    enabled: !!settings.folderPath,
+    enabled: queryEnabled,
   });
 
   const allMedia = data?.media ?? [];
