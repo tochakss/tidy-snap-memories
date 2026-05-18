@@ -1,8 +1,13 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { Sparkles, ImageIcon, Copy, HardDrive, Brain, ArrowUpRight } from "lucide-react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Sparkles, ImageIcon, Copy, HardDrive, Brain, ArrowUpRight, Loader2, AlertCircle, X, Cpu } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { PhotoCard } from "@/components/PhotoCard";
-import { photos } from "@/lib/photos";
+import { AlbumsPanel } from "@/components/AlbumsPanel";
+import { type Photo } from "@/lib/photos";
+import { scanFolder, getDuplicates, runAIScan, getAIProgress, fileUrl, type MediaFile, type AIScanProgress } from "@/lib/api";
+import { getSettings, type Settings } from "@/lib/settings";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -14,14 +19,180 @@ export const Route = createFileRoute("/")({
   component: LibraryPage,
 });
 
-const stats = [
-  { label: "Total Assets", value: "12,481", sub: "9,204 photos · 3,277 videos", icon: ImageIcon, accent: false },
-  { label: "Duplicates Found", value: "234", sub: "across 87 groups", icon: Copy, accent: false },
-  { label: "Space Recoverable", value: "4.2 GB", sub: "of 142 GB indexed", icon: HardDrive, accent: true },
-  { label: "AI Acceptance Rate", value: "94%", sub: "of recommendations kept", icon: Brain, accent: false },
-];
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+type MediaTypeLabel = Photo["type"];
+
+function toMediaTypeLabel(filename: string): MediaTypeLabel {
+  const ext = filename.split(".").pop()?.toUpperCase() ?? "";
+  const map: Record<string, MediaTypeLabel> = {
+    HEIC: "HEIC", HEIF: "HEIC",
+    JPG: "JPG", JPEG: "JPG",
+    PNG: "PNG",
+    MP4: "MP4",
+    MOV: "MOV",
+  };
+  return map[ext] ?? "JPG";
+}
+
+function toAspect(width?: number, height?: number): Photo["aspect"] {
+  if (!width || !height) return "square";
+  const r = width / height;
+  if (r > 1.2) return "wide";
+  if (r < 0.8) return "tall";
+  return "square";
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric",
+  });
+}
+
+function mediaFileToPhoto(mf: MediaFile): Photo {
+  return {
+    id: mf.path,
+    src: fileUrl(mf.path),
+    filename: mf.filename,
+    type: toMediaTypeLabel(mf.filename),
+    score: 5,
+    size: formatBytes(mf.size_bytes),
+    date: formatDate(mf.modified_at),
+    aspect: toAspect(mf.width, mf.height),
+  };
+}
+
+function formatTotalSize(bytes: number): string {
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+// ── component ─────────────────────────────────────────────────────────────────
+
+type Filter = "all" | "photos" | "videos" | "albums";
+
+type Provider = "ollama" | "claude" | "grok";
+type AiPhase = "select" | "running";
 
 function LibraryPage() {
+  const navigate = useNavigate();
+  const [settings, setSettings] = useState<Settings>({ name: "", folderPath: "" });
+  const [filter, setFilter] = useState<Filter>("all");
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  const [aiPhase, setAiPhase] = useState<AiPhase>("select");
+  const [aiProvider, setAiProvider] = useState<Provider>("ollama");
+  const [aiProgress, setAiProgress] = useState<AIScanProgress | null>(null);
+  const [acceptanceRate, setAcceptanceRate] = useState<number | null>(null);
+
+  useEffect(() => {
+    setSettings(getSettings());
+    const raw = typeof window !== "undefined" ? localStorage.getItem("ai_acceptance_rate") : null;
+    if (raw !== null) setAcceptanceRate(parseInt(raw, 10));
+  }, []);
+
+  // Poll AI scan progress when scan is running
+  useEffect(() => {
+    if (aiPhase !== "running") return;
+    const id = setInterval(async () => {
+      try {
+        const progress = await getAIProgress();
+        setAiProgress(progress);
+        if (progress.status === "done") {
+          clearInterval(id);
+          localStorage.setItem("ai_scan_results", JSON.stringify(progress.results));
+          setAiModalOpen(false);
+          setAiPhase("select");
+          navigate({ to: "/curation" });
+        } else if (progress.status === "error") {
+          clearInterval(id);
+          setAiPhase("select");
+        }
+      } catch {
+        // ignore transient polling errors
+      }
+    }, 2000);
+    return () => clearInterval(id);
+  }, [aiPhase, navigate]);
+
+  async function handleStartAiScan() {
+    if (!settings.folderPath) return;
+    setAiPhase("running");
+    try {
+      await runAIScan(settings.folderPath, aiProvider);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to start AI scan");
+      setAiPhase("select");
+    }
+  }
+
+  const firstName = settings.name.split(" ")[0] || "there";
+
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ["scan", settings.folderPath],
+    queryFn: () => scanFolder(settings.folderPath),
+    enabled: !!settings.folderPath,
+  });
+
+  // Same key as the Duplicates page — served from cache if already fetched there.
+  const { data: dupData } = useQuery({
+    queryKey: ["duplicates", settings.folderPath],
+    queryFn: () => getDuplicates(settings.folderPath),
+    enabled: !!settings.folderPath,
+  });
+
+  const allMedia = data?.media ?? [];
+  const filteredMedia = allMedia.filter((m) => {
+    if (filter === "photos") return m.media_type === "image";
+    if (filter === "videos") return m.media_type === "video";
+    return true;
+  });
+  const photos = filteredMedia.map(mediaFileToPhoto);
+  const totalFiles = data?.total_files ?? 0;
+  const imageCount = allMedia.filter((m) => m.media_type === "image").length;
+  const videoCount = allMedia.filter((m) => m.media_type === "video").length;
+  const totalBytes = allMedia.reduce((acc, m) => acc + m.size_bytes, 0);
+
+  const dupFileCount = dupData?.groups.reduce((acc, g) => acc + Math.max(0, g.files.length - 1), 0) ?? null;
+  const dupWastedBytes = dupData?.wasted_bytes ?? null;
+
+  const stats = [
+    {
+      label: "Total Assets",
+      value: totalFiles.toLocaleString(),
+      sub: `${imageCount.toLocaleString()} photos · ${videoCount.toLocaleString()} videos`,
+      icon: ImageIcon,
+      accent: false,
+    },
+    {
+      label: "Duplicates Found",
+      value: dupFileCount !== null ? dupFileCount.toLocaleString() : "—",
+      sub: dupFileCount !== null && dupWastedBytes !== null
+        ? `${formatBytes(dupWastedBytes)} recoverable`
+        : "run duplicate scan",
+      icon: Copy,
+      accent: false,
+    },
+    {
+      label: "Library Size",
+      value: totalBytes ? formatTotalSize(totalBytes) : "—",
+      sub: "total on disk",
+      icon: HardDrive,
+      accent: true,
+    },
+    {
+      label: "AI Acceptance Rate",
+      value: acceptanceRate !== null ? `${acceptanceRate}%` : "—",
+      sub: acceptanceRate !== null ? "AI curation complete" : "run AI curation",
+      icon: Brain,
+      accent: false,
+    },
+  ];
+
   return (
     <AppShell>
       {/* Header */}
@@ -29,13 +200,23 @@ function LibraryPage() {
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">Library</div>
           <h1 className="mt-2 text-[34px] font-bold leading-tight tracking-tight text-balance">
-            Welcome back, Alex.
+            Welcome back, {firstName}.
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            12,481 memories indexed · last AI scan 2 hours ago
+            {isLoading
+              ? "Scanning your library…"
+              : data
+                ? `${totalFiles.toLocaleString()} memories indexed · ${settings.folderPath}`
+                : settings.folderPath
+                  ? "Set a folder path in Settings to start scanning."
+                  : "Open Settings to choose your media folder."}
           </p>
         </div>
-        <button className="group inline-flex items-center gap-2 rounded-xl bg-gradient-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition-smooth hover:scale-[1.02]">
+        <button
+          onClick={() => setAiModalOpen(true)}
+          disabled={!settings.folderPath}
+          className="group inline-flex items-center gap-2 rounded-xl bg-gradient-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition-smooth hover:scale-[1.02] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
+        >
           <Sparkles className="h-4 w-4" strokeWidth={2.5} />
           Run AI Scan
           <ArrowUpRight className="h-3.5 w-3.5 opacity-60 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
@@ -71,27 +252,230 @@ function LibraryPage() {
         })}
       </div>
 
-      {/* Section title */}
+      {/* Section title + filter tabs */}
       <div className="mt-10 mb-4 flex items-baseline justify-between">
         <div>
-          <h2 className="text-lg font-semibold tracking-tight">All memories</h2>
-          <p className="text-xs text-muted-foreground">Sorted by date · most recent first</p>
+          <h2 className="text-lg font-semibold tracking-tight">
+            {filter === "albums"
+              ? "Albums"
+              : filter === "all"
+                ? "All memories"
+                : filter === "photos"
+                  ? "Photos"
+                  : "Videos"}
+            {filter !== "albums" && photos.length > 0 && (
+              <span className="ml-2 font-mono text-sm font-normal text-muted-foreground">
+                {photos.length.toLocaleString()}
+              </span>
+            )}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {filter === "albums"
+              ? "Grouped by GPS location and date"
+              : "Sorted by date · most recent first"}
+          </p>
         </div>
         <div className="flex gap-1 rounded-lg border border-border bg-surface p-1 text-xs">
-          <button className="rounded-md bg-accent px-3 py-1.5 font-medium">All</button>
-          <button className="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground">Photos</button>
-          <button className="rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground">Videos</button>
+          {(["all", "photos", "videos", "albums"] as Filter[]).map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={
+                filter === f
+                  ? "rounded-md bg-accent px-3 py-1.5 font-medium"
+                  : "rounded-md px-3 py-1.5 text-muted-foreground hover:text-foreground"
+              }
+            >
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </button>
+          ))}
         </div>
       </div>
 
+      {/* Albums tab */}
+      {filter === "albums" && settings.folderPath && (
+        <AlbumsPanel folderPath={settings.folderPath} />
+      )}
+      {filter === "albums" && !settings.folderPath && (
+        <div className="flex flex-col items-center gap-2 py-24 text-muted-foreground">
+          <p className="text-sm">Open Settings to choose a media folder first.</p>
+        </div>
+      )}
+
+      {/* States */}
+      {filter !== "albums" && isLoading && (
+        <div className="flex flex-col items-center gap-3 py-24 text-muted-foreground">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-sm">Scanning your library…</p>
+        </div>
+      )}
+
+      {filter !== "albums" && isError && (
+        <div className="flex flex-col items-center gap-3 py-24 text-muted-foreground">
+          <AlertCircle className="h-8 w-8 text-destructive" />
+          <p className="text-sm font-medium text-destructive">
+            {error instanceof Error ? error.message : "Scan failed"}
+          </p>
+          <button
+            onClick={() => refetch()}
+            className="rounded-lg border border-border px-4 py-2 text-xs font-medium hover:bg-accent"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {filter !== "albums" && !isLoading && !isError && !settings.folderPath && (
+        <div className="flex flex-col items-center gap-2 py-24 text-muted-foreground">
+          <p className="text-sm">No folder selected — click the gear icon to open Settings.</p>
+        </div>
+      )}
+
       {/* Masonry grid */}
-      <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 xl:columns-5">
-        {[...photos, ...photos.slice(0, 6)].map((p, i) => (
-          <div key={`${p.id}-${i}`} className="mb-4 break-inside-avoid">
-            <PhotoCard photo={p} />
+      {filter !== "albums" && !isLoading && !isError && photos.length > 0 && (
+        <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 xl:columns-5">
+          {photos.map((p, i) => (
+            <div key={`${p.id}-${i}`} className="mb-4 break-inside-avoid">
+              <PhotoCard photo={p} />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {filter !== "albums" && !isLoading && !isError && settings.folderPath && photos.length === 0 && data && (
+        <div className="flex flex-col items-center gap-2 py-24 text-muted-foreground">
+          <p className="text-sm">No media files found in {settings.folderPath}.</p>
+        </div>
+      )}
+
+      {/* AI Scan Modal */}
+      {aiModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md">
+          <div className="w-[440px] rounded-2xl border border-border bg-surface-elevated p-6 shadow-elev">
+            {aiPhase === "select" ? (
+              <>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15">
+                      <Sparkles className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <div className="font-semibold">Run AI Scan</div>
+                      <div className="text-xs text-muted-foreground">Score every photo and video in your library</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setAiModalOpen(false)}
+                    className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                <div className="mt-5">
+                  <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    AI Provider
+                  </div>
+                  <div className="flex gap-2">
+                    {(
+                      [
+                        { id: "ollama", label: "Ollama", sub: "local · free" },
+                        { id: "claude", label: "Claude", sub: "Anthropic" },
+                        { id: "grok", label: "Grok", sub: "xAI" },
+                      ] as { id: Provider; label: string; sub: string }[]
+                    ).map(({ id, label, sub }) => (
+                      <button
+                        key={id}
+                        onClick={() => setAiProvider(id)}
+                        className={`flex flex-1 flex-col items-center rounded-xl border px-3 py-2.5 text-xs transition-smooth ${
+                          aiProvider === id
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border bg-surface text-muted-foreground hover:bg-accent/50"
+                        }`}
+                      >
+                        <Cpu className="mb-1 h-4 w-4" />
+                        <span className="font-semibold">{label}</span>
+                        <span className="text-[10px] opacity-70">{sub}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mt-5 rounded-xl border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
+                  This will score <strong className="text-foreground">{totalFiles.toLocaleString()} files</strong> — may take a few minutes.
+                </div>
+
+                <div className="mt-4 flex gap-2">
+                  <button
+                    onClick={() => setAiModalOpen(false)}
+                    className="flex-1 rounded-lg border border-border px-4 py-2.5 text-sm font-medium transition-smooth hover:bg-accent"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleStartAiScan}
+                    className="flex-1 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-glow-soft transition-smooth hover:scale-[1.02]"
+                  >
+                    Start Scan
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/15">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  </div>
+                  <div>
+                    <div className="font-semibold">Scoring your library…</div>
+                    <div className="text-xs text-muted-foreground">
+                      Using {aiProvider === "ollama" ? "Ollama (local)" : aiProvider === "claude" ? "Claude" : "Grok"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="mb-2 flex justify-between text-xs">
+                    <span className="text-muted-foreground">
+                      {aiProgress
+                        ? `Scoring photo ${aiProgress.completed} of ${aiProgress.total}…`
+                        : "Initialising…"}
+                    </span>
+                    <span className="font-mono tabular-nums text-muted-foreground">
+                      {aiProgress && aiProgress.total > 0
+                        ? `${Math.round((aiProgress.completed / aiProgress.total) * 100)}%`
+                        : "0%"}
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-gradient-primary transition-all duration-300"
+                      style={{
+                        width: `${
+                          aiProgress && aiProgress.total > 0
+                            ? (aiProgress.completed / aiProgress.total) * 100
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {aiProgress?.status === "error" && (
+                  <div className="mt-4 flex items-start gap-2 rounded-xl bg-destructive/10 p-3">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                    <p className="text-sm text-destructive">{aiProgress.error ?? "Scan failed"}</p>
+                  </div>
+                )}
+
+                <p className="mt-4 text-center text-xs text-muted-foreground">
+                  You'll be taken to the Curation screen when complete.
+                </p>
+              </>
+            )}
           </div>
-        ))}
-      </div>
+        </div>
+      )}
     </AppShell>
   );
 }

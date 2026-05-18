@@ -1,0 +1,22 @@
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# Data validation
+pydantic>=2.7.0
+
+# Computer vision & image processing
+opencv-python-headless>=4.9.0
+Pillow>=10.3.0
+imagehash>=4.3.1
+numpy>=1.26.0
+
+# HTTP client (Ollama + Grok calls)
+httpx>=0.27.0
+
+# AI providers (optional — install what you use)
+anthropic>=0.28.0          # Claude Haiku
+
+# Utilities
+python-dotenv>=1.0.0
+send2trash>=1.8.3          # cross-platform move-to-Trash (never hard-delete)

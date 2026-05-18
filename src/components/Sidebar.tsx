@@ -1,6 +1,10 @@
+import { useEffect, useState } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { Camera, FolderOpen, Copy, Sparkles, Upload, Search, Settings, HardDrive } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getSettings } from "@/lib/settings";
+import { getDuplicates } from "@/lib/api";
 
 type NavItem = {
   to: "/" | "/duplicates" | "/curation" | "/publish" | "/search";
@@ -11,14 +15,48 @@ type NavItem = {
 
 const navItems: NavItem[] = [
   { to: "/", label: "Library", icon: FolderOpen },
-  { to: "/duplicates", label: "Duplicates", icon: Copy, badge: 234 },
+  { to: "/duplicates", label: "Duplicates", icon: Copy },
   { to: "/curation", label: "Curation", icon: Sparkles },
   { to: "/publish", label: "Publish", icon: Upload },
   { to: "/search", label: "Search", icon: Search },
 ];
 
-export function Sidebar() {
+interface Props {
+  onOpenSettings?: () => void;
+}
+
+export function Sidebar({ onOpenSettings }: Props) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const [name, setName] = useState("—");
+  const [folderPath, setFolderPath] = useState("Local library");
+  const [fullFolderPath, setFullFolderPath] = useState("");
+
+  useEffect(() => {
+    const s = getSettings();
+    if (s.name) setName(s.name);
+    if (s.folderPath) {
+      setFolderPath(s.folderPath.split("/").pop() || s.folderPath);
+      setFullFolderPath(s.folderPath);
+    }
+  }, []);
+
+  const { data: dupData, isLoading: dupLoading } = useQuery({
+    queryKey: ["duplicates", fullFolderPath],
+    queryFn: () => getDuplicates(fullFolderPath),
+    enabled: !!fullFolderPath,
+  });
+
+  const dupBadge =
+    !dupLoading && dupData
+      ? dupData.groups.reduce((acc, g) => acc + Math.max(0, g.files.length - 1), 0)
+      : null;
+
+  const initials = name
+    .split(" ")
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 
   return (
     <aside className="fixed inset-y-0 left-0 z-30 flex w-[220px] flex-col border-r border-border bg-surface/60 backdrop-blur-xl">
@@ -58,11 +96,17 @@ export function Sidebar() {
                   )}
                   <Icon className={cn("h-4 w-4 shrink-0", active && "text-primary")} strokeWidth={2.25} />
                   <span className="flex-1">{item.label}</span>
-                  {item.badge && (
-                    <span className="rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-                      {item.badge}
-                    </span>
-                  )}
+                  {item.to === "/duplicates"
+                    ? dupBadge != null && dupBadge > 0 && (
+                        <span className="rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+                          {dupBadge}
+                        </span>
+                      )
+                    : item.badge != null && item.badge > 0 && (
+                        <span className="rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+                          {item.badge}
+                        </span>
+                      )}
                 </Link>
               </li>
             );
@@ -92,14 +136,20 @@ export function Sidebar() {
       <div className="flex items-center justify-between border-t border-border px-4 py-3">
         <div className="flex items-center gap-2.5">
           <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-primary to-primary/40 text-[11px] font-bold text-primary-foreground">
-            AK
+            {initials || "?"}
           </div>
           <div className="text-xs">
-            <div className="font-semibold">Alex K.</div>
-            <div className="text-[10px] text-muted-foreground">Local library</div>
+            <div className="font-semibold">{name}</div>
+            <div className="max-w-[110px] truncate text-[10px] text-muted-foreground" title={folderPath}>
+              {folderPath}
+            </div>
           </div>
         </div>
-        <button className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-smooth hover:bg-accent hover:text-foreground" aria-label="Settings">
+        <button
+          onClick={onOpenSettings}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-smooth hover:bg-accent hover:text-foreground"
+          aria-label="Settings"
+        >
           <Settings className="h-3.5 w-3.5" />
         </button>
       </div>
