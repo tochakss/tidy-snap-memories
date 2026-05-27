@@ -1,19 +1,37 @@
 """
-POST /api/scan
-
-Accepts a folder path and returns a list of discovered media files with metadata.
-Delegates heavy lifting to services.scanner.
+POST /api/scan          — folder metadata scan
+POST /api/scan/ai       — synchronous quality scan; provider selects scoring backend
+                          provider="cv" (default): pure OpenCV, no network
+                          provider="deepseek": CV metrics sent as text to DeepSeek API
+GET  /api/scan/ai/results   — return results from last scan
+GET  /api/scan/ai/progress  — current scan progress counters
+GET  /api/scan/ai/has-incomplete — always false (sync scan never leaves partial state)
 """
+
+import json
+from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from models.media import MediaFile
 from services.scanner import scan_folder
-from services.ai_curator import start_ai_scan, get_progress, resume_ai_scan, check_incomplete_scan
+from services.cv_scorer import score_file, compute_memory_score
+from services.ai_provider import score_memory_deepseek
 
 router = APIRouter()
 
+RESULTS_FILE = Path(__file__).parent.parent / "scan_results.json"
+PROGRESS_FILE = Path(__file__).parent.parent / "scan_progress.json"
+
+IMAGE_EXTS = {
+    ".jpg", ".jpeg", ".png", ".heic", ".heif",
+    ".webp", ".gif", ".bmp", ".tiff", ".tif", ".avif",
+}
+
+
+# ── folder scan ────────────────────────────────────────────────────────────────
 
 class ScanRequest(BaseModel):
     folder_path: str
@@ -48,46 +66,105 @@ def scan(request: ScanRequest) -> ScanResponse:
     )
 
 
-# ── AI scan ────────────────────────────────────────────────────────────────────
+# ── AI scan (CV-only, synchronous) ────────────────────────────────────────────
 
 class AIScanRequest(BaseModel):
     folder_path: str
-    provider: str = "ollama"
+    provider: str = "cv"  # "cv" | "deepseek"
 
 
 @router.post("/scan/ai")
 def scan_ai(request: AIScanRequest) -> dict:
     """
-    Start a background AI scan. Returns immediately; poll /scan/ai/progress.
-    Returns HTTP 503 if the AI provider (e.g. Ollama model) is not available.
+    Synchronous scan. Always runs OpenCV first; if provider='deepseek' also
+    calls the DeepSeek text API with the CV metrics for a richer memory score.
+    Blocks until all photos are processed, then returns.
     """
+    folder = Path(request.folder_path)
+    if not folder.exists():
+        raise HTTPException(status_code=404, detail=f"Folder not found: {request.folder_path}")
+
+    use_deepseek = request.provider == "deepseek"
+    files = sorted(p for p in folder.rglob("*") if p.suffix.lower() in IMAGE_EXTS and p.is_file())
+    print(f"AI scan starting: {len(files)} images in {folder} (provider={request.provider})")
+
+    # Clear previous run
+    RESULTS_FILE.unlink(missing_ok=True)
+    PROGRESS_FILE.unlink(missing_ok=True)
+
+    results = []
+    for i, p in enumerate(files):
+        try:
+            cv = score_file(str(p))
+            composite = cv.overall_score
+            sharpness_pct = min(cv.blur_score / 500.0 * 100, 100.0)
+            brightness_pct = cv.brightness_score / 255.0 * 100
+
+            if use_deepseek:
+                ai = score_memory_deepseek(
+                    filename=p.name,
+                    sharpness=sharpness_pct,
+                    brightness=brightness_pct,
+                    composite=composite,
+                    faces=cv.faces_detected,
+                )
+                memory_score = ai["memory_score"]
+                ai_reason = ai["reason"]
+                keep = ai["keep"]
+            else:
+                memory_score, ai_reason, keep = compute_memory_score(cv)
+
+            results.append({
+                "file_path": str(p),
+                "filename": p.name,
+                "thumbnail_url": f"http://localhost:8000/api/file?path={quote(str(p))}",
+                "sharpness": cv.blur_score,
+                "brightness": cv.brightness_score,
+                "composite_score": composite,
+                "memory_score": memory_score,
+                "ai_reason": ai_reason,
+                "keep_suggested": keep,
+                "faces_detected": cv.faces_detected,
+            })
+        except Exception as exc:
+            print(f"Skipping {p.name}: {exc}")
+
+        # Checkpoint after every photo
+        PROGRESS_FILE.write_text(json.dumps({"completed": i + 1, "total": len(files)}))
+
+    RESULTS_FILE.write_text(json.dumps(results, indent=2))
+    print(f"AI scan complete: {len(results)} results saved to {RESULTS_FILE}")
+
+    return {"status": "complete", "total": len(results)}
+
+
+@router.get("/scan/ai/results")
+def ai_results() -> list:
+    """Return scored results from the last CV scan."""
     try:
-        start_ai_scan(request.folder_path, request.provider)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"status": "started"}
+        if not RESULTS_FILE.exists():
+            print("Loaded 0 results from disk")
+            return []
+        data = json.loads(RESULTS_FILE.read_text())
+        print(f"Loaded {len(data)} results from disk")
+        return data
+    except Exception as exc:
+        print(f"Error reading results: {exc}")
+        return []
 
 
 @router.get("/scan/ai/progress")
 def ai_progress() -> dict:
-    """Return current AI scan progress and results (populated when status == 'done')."""
-    return get_progress()
-
-
-@router.get("/scan/ai/resume")
-def ai_resume() -> dict:
-    """
-    Resume from scan_progress.json if an incomplete scan exists.
-    Returns {status: 'resumed'|'no_incomplete_scan'|'already_running', completed, total}.
-    Poll /scan/ai/progress after a 'resumed' response.
-    """
-    return resume_ai_scan()
+    """Return progress counters from the last (or current) scan."""
+    try:
+        if PROGRESS_FILE.exists():
+            return json.loads(PROGRESS_FILE.read_text())
+    except Exception:
+        pass
+    return {"completed": 0, "total": 0}
 
 
 @router.get("/scan/ai/has-incomplete")
 def ai_has_incomplete() -> dict:
-    """
-    Check whether scan_progress.json holds an unfinished scan.
-    Returns {has_incomplete: bool, completed, total, folder_path} — never starts anything.
-    """
-    return check_incomplete_scan()
+    """Synchronous scans never leave partial state."""
+    return {"has_incomplete": False}

@@ -195,7 +195,7 @@ function DuplicatesPage() {
       {/* Header */}
       <div>
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">Duplicates</div>
-        <h1 className="mt-2 text-[34px] font-bold leading-tight tracking-tight">
+        <h1 className="mt-2 text-2xl font-bold leading-tight tracking-tight md:text-[34px]">
           {isLoading
             ? "Scanning for duplicates…"
             : totalGroups > 0
@@ -334,11 +334,11 @@ function DuplicatesPage() {
         </div>
       )}
 
-      {/* Floating action bar */}
+      {/* Floating action bar — sits above the bottom nav on mobile */}
       {activeKeptCount > 0 && (
-        <div className="sticky bottom-6 mt-8 flex items-center justify-between gap-4 rounded-2xl border border-border bg-surface-elevated/90 p-4 shadow-elev backdrop-blur-xl">
+        <div className="sticky bottom-20 mt-8 flex flex-col gap-3 rounded-2xl border border-border bg-surface-elevated/90 p-4 shadow-elev backdrop-blur-xl md:bottom-6 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-destructive/15 text-destructive">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-destructive/15 text-destructive">
               <Trash2 className="h-4 w-4" />
             </div>
             <div>
@@ -354,14 +354,14 @@ function DuplicatesPage() {
             <button
               onClick={() => setKept(new Set())}
               disabled={isDeleting}
-              className="rounded-lg border border-border bg-surface px-4 py-2 text-sm font-medium text-muted-foreground transition-smooth hover:bg-accent hover:text-foreground disabled:opacity-50"
+              className="flex-1 rounded-lg border border-border bg-surface px-4 py-2.5 text-sm font-medium text-muted-foreground transition-smooth hover:bg-accent hover:text-foreground disabled:opacity-50 md:flex-none md:py-2"
             >
               Cancel
             </button>
             <button
               onClick={handleDelete}
               disabled={isDeleting}
-              className="inline-flex items-center gap-2 rounded-lg bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground transition-smooth hover:scale-[1.02] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-destructive px-4 py-2.5 text-sm font-semibold text-destructive-foreground transition-smooth hover:scale-[1.02] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100 md:flex-none md:py-2"
             >
               {isDeleting ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -376,7 +376,7 @@ function DuplicatesPage() {
 
       {/* Bulk action info toast */}
       {infoToast && (
-        <div className="fixed bottom-6 right-6 z-50 flex w-[340px] items-start gap-3 rounded-xl border border-border bg-surface-elevated/95 p-4 shadow-elev backdrop-blur-xl">
+        <div className="fixed bottom-24 left-4 right-4 z-50 flex items-start gap-3 rounded-xl border border-border bg-surface-elevated/95 p-4 shadow-elev backdrop-blur-xl md:bottom-6 md:left-auto md:right-6 md:w-[340px]">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
             <Wand2 className="h-4 w-4" />
           </div>
@@ -393,7 +393,7 @@ function DuplicatesPage() {
 
       {/* Delete success toast */}
       {toast && (
-        <div className="fixed bottom-6 right-6 z-50 flex w-[340px] items-start gap-3 rounded-xl border border-border bg-surface-elevated/95 p-4 shadow-elev backdrop-blur-xl">
+        <div className="fixed bottom-24 left-4 right-4 z-50 flex items-start gap-3 rounded-xl border border-border bg-surface-elevated/95 p-4 shadow-elev backdrop-blur-xl md:bottom-6 md:left-auto md:right-6 md:w-[340px]">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
             <Check className="h-4 w-4" strokeWidth={3} />
           </div>
@@ -438,8 +438,8 @@ function GroupCard({ group, index, isKept, userSelectedKeep, onKeepBest, onRevie
         isKept ? "border-primary/50" : "border-border"
       }`}
     >
-      <div className="flex items-center justify-between border-b border-border px-5 py-3">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-3 border-b border-border px-4 py-3 md:flex-row md:items-center md:justify-between md:px-5">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="font-mono text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             Group {String(index + 1).padStart(2, "0")}
           </div>
@@ -452,16 +452,16 @@ function GroupCard({ group, index, isKept, userSelectedKeep, onKeepBest, onRevie
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={onKeepBest}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-muted-foreground transition-smooth hover:bg-accent hover:text-foreground"
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-muted-foreground transition-smooth hover:bg-accent hover:text-foreground"
           >
             <SkipForward className="h-3 w-3" /> Skip
           </button>
           <button
             onClick={onReviewAll}
-            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-smooth hover:bg-accent ${
+            className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-smooth hover:bg-accent ${
               isKept
                 ? "border-primary/40 bg-primary/10 text-primary"
                 : "border-border bg-surface"
@@ -472,7 +472,7 @@ function GroupCard({ group, index, isKept, userSelectedKeep, onKeepBest, onRevie
           </button>
           <button
             onClick={onKeepBest}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-glow-soft transition-smooth hover:scale-[1.02] ${
+            className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-glow-soft transition-smooth hover:scale-[1.02] ${
               isKept
                 ? "border border-primary/40 bg-primary/20 text-primary"
                 : "bg-primary text-primary-foreground"
@@ -484,20 +484,20 @@ function GroupCard({ group, index, isKept, userSelectedKeep, onKeepBest, onRevie
         </div>
       </div>
 
-      <div
-        className="grid gap-3 p-5"
-        style={{ gridTemplateColumns: `repeat(${Math.min(group.files.length, 5)}, minmax(0, 1fr))` }}
-      >
+      {/* On mobile: horizontal scroll; on desktop: grid */}
+      <div className="flex gap-3 overflow-x-auto p-4 pb-3 md:grid md:overflow-visible md:p-5"
+           style={{ gridTemplateColumns: `repeat(${Math.min(group.files.length, 5)}, minmax(0, 1fr))` }}>
         {group.files.map((file) => {
           const isBest = file.path === effectiveKeep;
           return (
-            <FileCard
-              key={file.path}
-              file={file}
-              isBest={isBest}
-              groupReviewed={isKept}
-              onClick={() => onSelectKeep(file.path)}
-            />
+            <div key={file.path} className="min-w-[160px] shrink-0 md:min-w-0 md:shrink">
+              <FileCard
+                file={file}
+                isBest={isBest}
+                groupReviewed={isKept}
+                onClick={() => onSelectKeep(file.path)}
+              />
+            </div>
           );
         })}
       </div>

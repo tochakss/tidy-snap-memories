@@ -19,9 +19,10 @@ Create a `.env` file (or export to shell):
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...   # required for provider=claude
+DEEPSEEK_API_KEY=sk-...        # required for provider=deepseek (recommended cloud option)
 GROK_API_KEY=...               # required for provider=grok
 OLLAMA_URL=http://localhost:11434   # default
-OLLAMA_MODEL=qwen3:8b              # default
+OLLAMA_MODEL=moondream:latest      # default
 ```
 
 ## Endpoints

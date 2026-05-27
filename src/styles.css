@@ -120,6 +120,17 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  /* Prevent iOS double-tap zoom and tap flash on all interactive elements */
+  button, a, [role="button"], input, select, textarea {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  /* Prevent iOS input zoom — 16px minimum on all inputs */
+  input, select, textarea {
+    font-size: max(16px, 1em);
+  }
+
   body {
     background-image: var(--gradient-bg);
     background-attachment: fixed;
@@ -196,6 +207,9 @@
   .animate-slide-in-right { animation: slide-in-right 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
   .animate-slide-up { animation: slide-up 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
   .animate-pulse-glow { animation: pulse-glow 2.4s ease-in-out infinite; }
+
+  /* Mobile touch experience */
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
   .skeleton {
     background: linear-gradient(90deg,

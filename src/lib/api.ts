@@ -207,6 +207,13 @@ export function checkIncomplete(): Promise<IncompleteCheck> {
   return api<IncompleteCheck>(`${BASE}/api/scan/ai/has-incomplete`);
 }
 
+export function getScanResults(): Promise<ScoredMedia[]> {
+  if (getCachedMode() === "browser") {
+    return Promise.resolve(getBrowserAIProgress().results);
+  }
+  return api<ScoredMedia[]>(`${BASE}/api/scan/ai/results`);
+}
+
 export function resumeAIScan(): Promise<{ status: string; completed?: number; total?: number; folder_path?: string }> {
   if (getCachedMode() === "browser") {
     return Promise.resolve({ status: "no_incomplete_scan" });

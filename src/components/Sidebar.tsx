@@ -81,7 +81,7 @@ export function Sidebar({ onOpenSettings }: Props) {
     .toUpperCase();
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-30 flex w-[220px] flex-col border-r border-border bg-surface/60 backdrop-blur-xl">
+    <aside className="fixed inset-y-0 left-0 z-30 hidden w-[220px] flex-col border-r border-border bg-surface/60 backdrop-blur-xl md:flex">
       {/* Brand */}
       <div className="flex items-center gap-2.5 px-5 pt-6 pb-4">
         <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-primary shadow-glow-soft">

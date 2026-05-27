@@ -132,6 +132,26 @@ def _call_claude(prompt: str, thumb_b64: str) -> str:
     return msg.content[0].text
 
 
+def _call_deepseek(prompt: str) -> str:
+    """Text-only call — sends CV metrics, no image (DeepSeek-V4-Flash has no vision API)."""
+    import httpx  # type: ignore
+
+    api_key = os.environ["DEEPSEEK_API_KEY"]
+    payload = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 100,
+    }
+    r = httpx.post(
+        "https://api.deepseek.com/chat/completions",
+        json=payload,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
 def _call_grok(prompt: str, thumb_b64: str) -> str:
     import httpx  # type: ignore
 
@@ -234,6 +254,44 @@ def _parse_curation(raw: str) -> dict:
         "keep": bool(data.get("keep", True)),
         "faces_detected": bool(data.get("faces_detected", False)),
     }
+
+
+def _build_deepseek_curation_prompt(
+    filename: str,
+    sharpness: float,
+    brightness: float,
+    composite: float,
+    faces: bool,
+) -> str:
+    return (
+        f"A photo has these quality metrics:\n"
+        f"sharpness: {sharpness:.0f}/100\n"
+        f"brightness: {brightness:.0f}/100\n"
+        f"composite_score: {composite:.0f}/100\n"
+        f"faces_detected: {str(faces).lower()}\n"
+        f"filename: {filename}\n\n"
+        "Based on these metrics, rate this photo as a memory.\n"
+        'Reply with JSON only: {"memory_score": 1-10, "reason": "one sentence", "keep": true/false}'
+    )
+
+
+def score_memory_deepseek(
+    filename: str,
+    sharpness: float,
+    brightness: float,
+    composite: float,
+    faces: bool,
+) -> dict:
+    """
+    Score a photo using CV metrics sent as text to DeepSeek.
+    No image is transmitted — only the numeric metrics derived from local CV scoring.
+    """
+    prompt = _build_deepseek_curation_prompt(filename, sharpness, brightness, composite, faces)
+    raw = _call_deepseek(prompt)
+    parsed = _parse_curation(raw)
+    # DeepSeek never sees the image, so trust the CV face result instead
+    parsed["faces_detected"] = faces
+    return parsed
 
 
 def score_memory(path: str, provider: str = "ollama") -> dict:

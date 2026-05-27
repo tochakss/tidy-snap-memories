@@ -6,7 +6,7 @@ import { AppShell } from "@/components/AppShell";
 import { PhotoCard } from "@/components/PhotoCard";
 import { AlbumsPanel } from "@/components/AlbumsPanel";
 import { type Photo } from "@/lib/photos";
-import { scanFolder, getDuplicates, runAIScan, getAIProgress, fileUrl, type MediaFile, type AIScanProgress } from "@/lib/api";
+import { scanFolder, getDuplicates, runAIScan, getScanResults, fileUrl, type MediaFile } from "@/lib/api";
 import { getSettings, type Settings } from "@/lib/settings";
 import { useModeDetecting } from "@/lib/mode";
 
@@ -77,7 +77,7 @@ function formatTotalSize(bytes: number): string {
 
 type Filter = "all" | "photos" | "videos" | "albums";
 
-type Provider = "ollama" | "claude" | "grok";
+type Provider = "ollama" | "claude" | "deepseek" | "grok";
 type AiPhase = "select" | "running";
 
 function LibraryPage() {
@@ -88,7 +88,6 @@ function LibraryPage() {
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiPhase, setAiPhase] = useState<AiPhase>("select");
   const [aiProvider, setAiProvider] = useState<Provider>("ollama");
-  const [aiProgress, setAiProgress] = useState<AIScanProgress | null>(null);
   const [acceptanceRate, setAcceptanceRate] = useState<number | null>(null);
 
   useEffect(() => {
@@ -97,35 +96,16 @@ function LibraryPage() {
     if (raw !== null) setAcceptanceRate(parseInt(raw, 10));
   }, []);
 
-  // Poll AI scan progress when scan is running
-  useEffect(() => {
-    if (aiPhase !== "running") return;
-    const id = setInterval(async () => {
-      try {
-        const progress = await getAIProgress();
-        setAiProgress(progress);
-        if (progress.status === "done") {
-          clearInterval(id);
-          localStorage.setItem("ai_scan_results", JSON.stringify(progress.results));
-          setAiModalOpen(false);
-          setAiPhase("select");
-          navigate({ to: "/curation" });
-        } else if (progress.status === "error") {
-          clearInterval(id);
-          setAiPhase("select");
-        }
-      } catch {
-        // ignore transient polling errors
-      }
-    }, 2000);
-    return () => clearInterval(id);
-  }, [aiPhase, navigate]);
-
   async function handleStartAiScan() {
     if (!settings.folderPath) return;
     setAiPhase("running");
     try {
       await runAIScan(settings.folderPath, aiProvider);
+      const verified = await getScanResults();
+      console.log("Verified results:", verified.length);
+      setAiModalOpen(false);
+      setAiPhase("select");
+      navigate({ to: "/curation" });
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to start AI scan");
       setAiPhase("select");
@@ -200,10 +180,10 @@ function LibraryPage() {
   return (
     <AppShell>
       {/* Header */}
-      <div className="flex items-end justify-between gap-6">
+      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between md:gap-6">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">Library</div>
-          <h1 className="mt-2 text-[34px] font-bold leading-tight tracking-tight text-balance">
+          <h1 className="mt-2 text-2xl font-bold leading-tight tracking-tight text-balance md:text-[34px]">
             Welcome back, {firstName}.
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">
@@ -219,7 +199,7 @@ function LibraryPage() {
         <button
           onClick={() => setAiModalOpen(true)}
           disabled={!settings.folderPath}
-          className="group inline-flex items-center gap-2 rounded-xl bg-gradient-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition-smooth hover:scale-[1.02] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
+          className="group inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition-smooth hover:scale-[1.02] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100 md:w-auto"
         >
           <Sparkles className="h-4 w-4" strokeWidth={2.5} />
           Run AI Scan
@@ -228,7 +208,7 @@ function LibraryPage() {
       </div>
 
       {/* Stats */}
-      <div className="mt-8 grid grid-cols-4 gap-4">
+      <div className="mt-6 grid grid-cols-2 gap-3 md:mt-8 md:grid-cols-4 md:gap-4">
         {stats.map((s) => {
           const Icon = s.icon;
           return (
@@ -337,7 +317,7 @@ function LibraryPage() {
 
       {/* Masonry grid */}
       {filter !== "albums" && !isLoading && !isError && photos.length > 0 && (
-        <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 xl:columns-5">
+        <div className="columns-2 gap-3 md:columns-3 lg:columns-4 xl:columns-5">
           {photos.map((p, i) => (
             <div key={`${p.id}-${i}`} className="mb-4 break-inside-avoid">
               <PhotoCard photo={p} />
@@ -354,8 +334,8 @@ function LibraryPage() {
 
       {/* AI Scan Modal */}
       {aiModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md">
-          <div className="w-[440px] rounded-2xl border border-border bg-surface-elevated p-6 shadow-elev">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-md sm:items-center">
+          <div className="w-full rounded-t-2xl border border-border bg-surface-elevated p-6 shadow-elev sm:w-[440px] sm:rounded-2xl">
             {aiPhase === "select" ? (
               <>
                 <div className="flex items-center justify-between">
@@ -380,12 +360,13 @@ function LibraryPage() {
                   <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     AI Provider
                   </div>
-                  <div className="flex gap-2">
+                  <div className="grid grid-cols-4 gap-2">
                     {(
                       [
                         { id: "ollama", label: "Ollama", sub: "local · free" },
-                        { id: "claude", label: "Claude", sub: "Anthropic" },
-                        { id: "grok", label: "Grok", sub: "xAI" },
+                        { id: "deepseek", label: "DeepSeek", sub: "cheapest cloud · BYOK" },
+                        { id: "claude", label: "Claude", sub: "Anthropic · BYOK" },
+                        { id: "grok", label: "Grok", sub: "xAI · BYOK" },
                       ] as { id: Provider; label: string; sub: string }[]
                     ).map(({ id, label, sub }) => (
                       <button
@@ -433,44 +414,25 @@ function LibraryPage() {
                   <div>
                     <div className="font-semibold">Scoring your library…</div>
                     <div className="text-xs text-muted-foreground">
-                      Using {aiProvider === "ollama" ? "Ollama (local)" : aiProvider === "claude" ? "Claude" : "Grok"}
+                      Using {
+                      aiProvider === "ollama" ? "Ollama (local)"
+                      : aiProvider === "deepseek" ? "DeepSeek"
+                      : aiProvider === "claude" ? "Claude"
+                      : "Grok"
+                    }
                     </div>
                   </div>
                 </div>
 
                 <div className="mt-4">
                   <div className="mb-2 flex justify-between text-xs">
-                    <span className="text-muted-foreground">
-                      {aiProgress
-                        ? `Scoring photo ${aiProgress.completed} of ${aiProgress.total}…`
-                        : "Initialising…"}
-                    </span>
-                    <span className="font-mono tabular-nums text-muted-foreground">
-                      {aiProgress && aiProgress.total > 0
-                        ? `${Math.round((aiProgress.completed / aiProgress.total) * 100)}%`
-                        : "0%"}
-                    </span>
+                    <span className="text-muted-foreground">Scoring photos…</span>
+                    <span className="font-mono tabular-nums text-muted-foreground">running</span>
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-muted">
-                    <div
-                      className="h-full rounded-full bg-gradient-primary transition-all duration-300"
-                      style={{
-                        width: `${
-                          aiProgress && aiProgress.total > 0
-                            ? (aiProgress.completed / aiProgress.total) * 100
-                            : 0
-                        }%`,
-                      }}
-                    />
+                    <div className="h-full w-full rounded-full bg-gradient-primary animate-pulse" />
                   </div>
                 </div>
-
-                {aiProgress?.status === "error" && (
-                  <div className="mt-4 flex items-start gap-2 rounded-xl bg-destructive/10 p-3">
-                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-                    <p className="text-sm text-destructive">{aiProgress.error ?? "Scan failed"}</p>
-                  </div>
-                )}
 
                 <p className="mt-4 text-center text-xs text-muted-foreground">
                   You'll be taken to the Curation screen when complete.

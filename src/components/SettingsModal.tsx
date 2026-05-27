@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
-import { FolderOpen, User, Upload, CheckCircle2, AlertCircle, Chrome } from "lucide-react";
+import {
+  FolderOpen, User, Upload, CheckCircle2, AlertCircle, Chrome,
+} from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { saveSettings } from "@/lib/settings";
 import { scanFolder } from "@/lib/api";
@@ -15,31 +17,92 @@ interface Props {
 const SUPPORTED_EXTS = /\.(jpe?g|png|heic|heif|webp|avif|gif|bmp|tiff?|mp4|mov|avi|mkv|wmv|flv|webm|m4v)$/i;
 const supportsDirectoryPicker = typeof window !== "undefined" && "showDirectoryPicker" in window;
 
+// Count only the top-level media files in a directory handle (fast preview).
+async function countMediaInHandle(handle: FileSystemDirectoryHandle): Promise<number> {
+  let count = 0;
+  try {
+    for await (const [, entry] of (handle as unknown as AsyncIterable<[string, FileSystemHandle]>)) {
+      if (entry.kind === "file" && SUPPORTED_EXTS.test((entry as FileSystemFileHandle).name)) {
+        count++;
+      }
+    }
+  } catch {
+    // non-fatal
+  }
+  return count;
+}
+
 export function SettingsModal({ open, onClose, onSaved }: Props) {
   const mode = useMode();
   const [name, setName] = useState("");
 
-  // Local mode state
+  // ── local mode state ───────────────────────────────────────────────────────
   const [folderPath, setFolderPath] = useState("");
+  // Picked directory handle (local mode only — used for file count preview)
+  const [localDirHandle, setLocalDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const [localDirName, setLocalDirName] = useState<string | null>(null);
+  const [localFileCount, setLocalFileCount] = useState<number | null>(null);
+  const [countingFiles, setCountingFiles] = useState(false);
+  // Show the manual text-input — hidden by default when picker is available
+  const [showManualInput, setShowManualInput] = useState(!supportsDirectoryPicker);
 
-  // Browser mode state
+  // ── browser mode state ─────────────────────────────────────────────────────
   const [fileCount, setFileCount] = useState<number | null>(null);
   const [dirName, setDirName] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[] | null>(null);
   const [selectedDirHandle, setSelectedDirHandle] = useState<unknown>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Shared state
+  // ── shared ─────────────────────────────────────────────────────────────────
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState("");
+
+  // ── local mode: folder picker ──────────────────────────────────────────────
+
+  async function handleLocalPickDirectory() {
+    try {
+      const handle = await (
+        window as unknown as { showDirectoryPicker(): Promise<FileSystemDirectoryHandle> }
+      ).showDirectoryPicker();
+
+      setLocalDirHandle(handle);
+      setLocalDirName(handle.name);
+      setFolderPath("");           // cleared — user types the full absolute path
+      setShowManualInput(true);    // auto-reveal so user can complete the full path
+      setError("");
+
+      // Count media files asynchronously
+      setCountingFiles(true);
+      setLocalFileCount(null);
+      countMediaInHandle(handle)
+        .then((n) => setLocalFileCount(n))
+        .finally(() => setCountingFiles(false));
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name !== "AbortError") {
+        setError("Folder picker failed — please enter the path manually.");
+        setShowManualInput(true);
+      }
+    }
+  }
+
+  function handleClearLocalPick() {
+    setLocalDirHandle(null);
+    setLocalDirName(null);
+    setLocalFileCount(null);
+    setCountingFiles(false);
+    setFolderPath("");
+    setShowManualInput(!supportsDirectoryPicker);
+  }
 
   // ── local mode submit ──────────────────────────────────────────────────────
 
   async function handleLocalSave(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !folderPath.trim()) {
-      setError("Both fields are required.");
+    if (!name.trim()) { setError("Please enter your name."); return; }
+    if (!folderPath.trim()) {
+      setError("Please enter the full folder path (e.g. /Users/you/Pictures).");
+      setShowManualInput(true);
       return;
     }
     setError("");
@@ -60,13 +123,12 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
 
   async function handlePickDirectory() {
     try {
-      // showDirectoryPicker is not in the standard TS DOM types yet
       const handle = await (window as unknown as { showDirectoryPicker(): Promise<unknown> }).showDirectoryPicker();
       const dir = handle as { name: string };
       setSelectedDirHandle(handle);
       setSelectedFiles(null);
       setDirName(dir.name);
-      setFileCount(null); // will know after scan
+      setFileCount(null);
       setError("");
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== "AbortError") {
@@ -99,21 +161,20 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
   async function handleBrowserSave(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) { setError("Please enter your name."); return; }
-    if (!selectedDirHandle && !selectedFiles) { setError("Please select a folder or upload photos first."); return; }
-
+    if (!selectedDirHandle && !selectedFiles) {
+      setError("Please select a folder or upload photos first.");
+      return;
+    }
     setError("");
     setProcessing(true);
     setProgress(null);
-
     try {
       const onProg = (done: number, total: number) => setProgress({ done, total });
-
       if (selectedDirHandle) {
         await browserScanFromDirectory(selectedDirHandle, onProg);
       } else {
         await browserScanFromFiles(selectedFiles!, onProg);
       }
-
       saveSettings(name.trim(), "__browser__");
       onSaved?.();
       onClose();
@@ -125,8 +186,8 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
     }
   }
 
-  const hasSelection = !!(selectedDirHandle || selectedFiles);
-  const selectionLabel = dirName
+  const browserHasSelection = !!(selectedDirHandle || selectedFiles);
+  const browserSelectionLabel = dirName
     ? `📁 ${dirName}`
     : fileCount !== null
       ? `${fileCount} file${fileCount !== 1 ? "s" : ""} selected`
@@ -136,7 +197,7 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-md gap-0 p-0 overflow-hidden">
+      <DialogContent className="max-h-[95dvh] overflow-y-auto gap-0 p-0 overflow-hidden sm:max-w-md">
         {/* Header band */}
         <div className="bg-gradient-primary px-6 py-5">
           <DialogHeader>
@@ -166,34 +227,110 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
               placeholder="e.g. Alex"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              className="w-full rounded-lg border border-border bg-background px-3 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 min-h-[48px]"
             />
           </div>
 
           {mode === "local" ? (
-            /* ── Local mode: folder path text input ── */
-            <div className="flex flex-col gap-1.5">
-              <label className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                <FolderOpen className="h-3 w-3" />
-                Media folder path
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. /Users/you/Pictures"
-                value={folderPath}
-                onChange={(e) => setFolderPath(e.target.value)}
-                className="w-full rounded-lg border border-border bg-background px-3 py-2.5 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-              />
-              <p className="text-[11px] text-muted-foreground">
-                Paste an absolute path to the folder you want to scan.
-              </p>
-            </div>
-          ) : (
-            /* ── Browser mode: file / directory picker ── */
+            /* ── Local mode: folder picker + manual path input ── */
             <div className="flex flex-col gap-3">
               <label className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 <FolderOpen className="h-3 w-3" />
-                Your photos
+                Select your media folder
+              </label>
+
+              {supportsDirectoryPicker ? (
+                <div>
+                  {/* Single picker button — shows folder name + ✓ once selected */}
+                  <button
+                    type="button"
+                    onClick={handleLocalPickDirectory}
+                    className="w-full rounded-xl border border-border bg-background px-4 py-3 text-left flex items-center gap-3 transition-colors hover:border-primary min-h-[48px]"
+                  >
+                    <span className="text-xl">📁</span>
+                    <span className="flex-1 text-sm text-foreground">
+                      {localDirName
+                        ? localDirName
+                        : <span className="text-muted-foreground">Browse and select your media folder</span>}
+                    </span>
+                    {localDirName && (
+                      <span className="text-xs font-semibold text-emerald-500">✓</span>
+                    )}
+                  </button>
+
+                  {/* File count below the button */}
+                  {localDirName && (
+                    <p className="mt-1.5 text-[11px] text-muted-foreground">
+                      {countingFiles
+                        ? "Counting files…"
+                        : localFileCount !== null
+                          ? `~${localFileCount} media files detected`
+                          : ""}
+                    </p>
+                  )}
+
+                  {/* "enter path manually" toggle */}
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Or{" "}
+                    <button
+                      type="button"
+                      onClick={() => setShowManualInput(!showManualInput)}
+                      className="underline transition-colors hover:text-foreground"
+                    >
+                      enter path manually
+                    </button>
+                  </p>
+
+                  {/* Manual path input — auto-revealed after picking, or on toggle */}
+                  {showManualInput && (
+                    <div className="mt-2 flex flex-col gap-1.5">
+                      <input
+                        type="text"
+                        value={folderPath}
+                        onChange={(e) => setFolderPath(e.target.value)}
+                        placeholder={
+                          localDirName
+                            ? `/Users/yourname/${localDirName}`
+                            : "/Users/yourname/Pictures"
+                        }
+                        className="w-full rounded-lg border border-border bg-background px-3 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 min-h-[48px]"
+                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        {localDirName ? (
+                          <>
+                            Full path needed — folder is{" "}
+                            <span className="font-mono font-medium text-foreground">{localDirName}</span>
+                            {". "}Add the parent path above.
+                          </>
+                        ) : (
+                          "Paste the absolute path to the folder you want to scan."
+                        )}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Safari/Firefox fallback — manual input only */
+                <div className="flex flex-col gap-1.5">
+                  <input
+                    type="text"
+                    placeholder="/Users/yourname/Pictures"
+                    value={folderPath}
+                    onChange={(e) => setFolderPath(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-3 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 min-h-[48px]"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Paste the absolute path to the folder you want to scan.
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* ── Browser mode: file / directory picker (unchanged) ── */
+            <div className="flex flex-col gap-3">
+              <label className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <FolderOpen className="h-3 w-3" />
+                Select photos to analyze
               </label>
 
               {supportsDirectoryPicker ? (
@@ -204,7 +341,7 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
                     className="flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border bg-background py-5 text-sm font-medium text-muted-foreground transition-smooth hover:border-primary/50 hover:bg-accent hover:text-foreground"
                   >
                     <FolderOpen className="h-4 w-4" />
-                    {selectionLabel ?? "Select Folder"}
+                    {browserSelectionLabel ?? "📁 Select Folder"}
                   </button>
                   <div className="flex items-center gap-1.5 text-[11px] text-emerald-500">
                     <CheckCircle2 className="h-3 w-3" />
@@ -219,7 +356,7 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
                     className="flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border bg-background py-5 text-sm font-medium text-muted-foreground transition-smooth hover:border-primary/50 hover:bg-accent hover:text-foreground"
                   >
                     <Upload className="h-4 w-4" />
-                    {selectionLabel ?? "Upload Photos"}
+                    {browserSelectionLabel ?? "📱 Select Photos"}
                   </button>
                   <input
                     ref={fileInputRef}
@@ -238,7 +375,7 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
                 </>
               )}
 
-              {/* Progress during scan */}
+              {/* Progress during browser scan */}
               {processing && progress && (
                 <div className="mt-1">
                   <div className="mb-1 flex justify-between text-[11px] text-muted-foreground">
@@ -276,8 +413,8 @@ export function SettingsModal({ open, onClose, onSaved }: Props) {
 
           <button
             type="submit"
-            disabled={processing || (mode === "browser" && !hasSelection)}
-            className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition-smooth hover:scale-[1.02] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100"
+            disabled={processing || (mode === "browser" && !browserHasSelection)}
+            className="mt-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-glow transition-smooth hover:scale-[1.02] disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100 min-h-[48px]"
           >
             {processing ? (
               <>

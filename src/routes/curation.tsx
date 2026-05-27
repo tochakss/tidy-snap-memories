@@ -1,15 +1,12 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Sparkles, X, Check, Trash2, Image as ImageIcon, Film,
-  Brain, AlertCircle, Zap, Eye, EyeOff, RotateCcw, Loader2,
+  Brain, AlertCircle, Zap, Eye, EyeOff,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { MemoryScore } from "@/components/MemoryScore";
-import {
-  checkIncomplete, resumeAIScan, getAIProgress,
-  type ScoredMedia, type AIScanProgress, type IncompleteCheck,
-} from "@/lib/api";
+import { getScanResults, type ScoredMedia } from "@/lib/api";
 
 export const Route = createFileRoute("/curation")({
   head: () => ({
@@ -67,76 +64,30 @@ function CurationPage() {
   const navigate = useNavigate();
 
   const [results, setResults] = useState<ScoredMedia[]>([]);
+  const [loading, setLoading] = useState(true);
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [selected, setSelected] = useState<ScoredMedia | null>(null);
   const [minScore, setMinScore] = useState(1);
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("all");
   const [showFilter, setShowFilter] = useState<ShowFilter>("all");
 
-  // Incomplete-scan state
-  const [incompleteInfo, setIncompleteInfo] = useState<IncompleteCheck | null>(null);
-  const [resumeProgress, setResumeProgress] = useState<AIScanProgress | null>(null);
-  const [isResuming, setIsResuming] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Load persisted data on mount; if empty, check for an incomplete scan
+  // Fetch results directly from the backend on every page load
   useEffect(() => {
-    const raw = typeof window !== "undefined" ? localStorage.getItem("ai_scan_results") : null;
-    if (raw) {
-      try {
-        const parsed: ScoredMedia[] = JSON.parse(raw);
-        setResults(parsed);
-        const first = [...parsed].sort((a, b) => b.memory_score - a.memory_score)[0];
-        if (first) setSelected(first);
-      } catch {
-        // ignore corrupt data
-      }
-    } else {
-      // No completed scan — check for an incomplete one
-      checkIncomplete().then(setIncompleteInfo).catch(() => {});
-    }
+    getScanResults()
+      .then((data) => {
+        console.log("Curation results:", data.length);
+        const sorted = [...data].sort((a, b) => b.memory_score - a.memory_score);
+        setResults(sorted);
+        if (sorted[0]) setSelected(sorted[0]);
+      })
+      .catch((err) => console.error("Failed to load scan results:", err))
+      .finally(() => setLoading(false));
+
     const savedDecisions = typeof window !== "undefined" ? localStorage.getItem("ai_decisions") : null;
     if (savedDecisions) {
-      try {
-        setDecisions(JSON.parse(savedDecisions));
-      } catch {
-        // ignore
-      }
+      try { setDecisions(JSON.parse(savedDecisions)); } catch { /* ignore */ }
     }
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
-
-  async function handleResume() {
-    setIsResuming(true);
-    try {
-      const res = await resumeAIScan();
-      if (res.status === "no_incomplete_scan") {
-        setIncompleteInfo({ has_incomplete: false });
-        setIsResuming(false);
-        return;
-      }
-      // Poll progress until done
-      pollRef.current = setInterval(async () => {
-        const p = await getAIProgress();
-        setResumeProgress(p);
-        if (p.status === "done") {
-          clearInterval(pollRef.current!);
-          localStorage.setItem("ai_scan_results", JSON.stringify(p.results));
-          const sorted = [...p.results].sort((a, b) => b.memory_score - a.memory_score);
-          setResults(sorted);
-          setSelected(sorted[0] ?? null);
-          setIsResuming(false);
-          setResumeProgress(null);
-          setIncompleteInfo(null);
-        } else if (p.status === "error") {
-          clearInterval(pollRef.current!);
-          setIsResuming(false);
-        }
-      }, 2000);
-    } catch {
-      setIsResuming(false);
-    }
-  }
 
   // Persist decisions + acceptance rate whenever they change
   useEffect(() => {
@@ -168,14 +119,18 @@ function CurationPage() {
 
   // ── empty state ──────────────────────────────────────────────────────────────
 
-  if (results.length === 0) {
-    const resumePct =
-      resumeProgress && resumeProgress.total > 0
-        ? Math.round((resumeProgress.completed / resumeProgress.total) * 100)
-        : incompleteInfo?.has_incomplete && incompleteInfo.total
-          ? Math.round(((incompleteInfo.completed ?? 0) / incompleteInfo.total) * 100)
-          : 0;
+  if (loading) {
+    return (
+      <AppShell>
+        <div className="mt-20 flex flex-col items-center gap-3 py-16 text-muted-foreground">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+          <p className="text-sm">Loading scan results…</p>
+        </div>
+      </AppShell>
+    );
+  }
 
+  if (results.length === 0) {
     return (
       <AppShell>
         <div>
@@ -184,73 +139,12 @@ function CurationPage() {
             The best of your year, automatically.
           </h1>
         </div>
-
-        {/* Incomplete scan detected */}
-        {incompleteInfo?.has_incomplete && (
-          <div className="mt-10 mx-auto max-w-md rounded-2xl border border-border bg-gradient-card p-6">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-warning/15">
-                <AlertCircle className="h-5 w-5 text-warning" />
-              </div>
-              <div>
-                <p className="font-semibold">Scan incomplete</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  A previous scan scored {incompleteInfo.completed ?? 0} of{" "}
-                  {incompleteInfo.total ?? "?"} photos before stopping.
-                  Pick up where it left off.
-                </p>
-              </div>
-            </div>
-
-            {/* Progress bar (shown while resuming) */}
-            {isResuming && (
-              <div className="mt-4">
-                <div className="mb-1.5 flex justify-between text-xs text-muted-foreground">
-                  <span className="flex items-center gap-1.5">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    {resumeProgress
-                      ? `Scoring photo ${resumeProgress.completed} of ${resumeProgress.total}…`
-                      : "Resuming…"}
-                  </span>
-                  <span className="font-mono tabular-nums">{resumePct}%</span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-gradient-primary transition-all duration-300"
-                    style={{ width: `${resumePct}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {!isResuming && (
-              <div className="mt-4 flex gap-2">
-                <button
-                  onClick={handleResume}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-glow-soft transition-smooth hover:scale-[1.02]"
-                >
-                  <RotateCcw className="h-4 w-4" />
-                  Resume Scan
-                </button>
-                <button
-                  onClick={() => navigate({ to: "/" })}
-                  className="flex-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium transition-smooth hover:bg-accent"
-                >
-                  Start fresh
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* No scan at all */}
-        {!incompleteInfo?.has_incomplete && !isResuming && (
         <div className="mt-20 flex flex-col items-center gap-4 py-16 text-muted-foreground">
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
             <Brain className="h-8 w-8 text-primary" strokeWidth={1.5} />
           </div>
           <div className="text-center">
-            <p className="text-base font-semibold text-foreground">No AI scan results yet</p>
+            <p className="text-base font-semibold text-foreground">No scan results yet</p>
             <p className="mt-1 text-sm">
               Click <span className="font-medium text-foreground">Run AI Scan</span> on the Library page to score your photos.
             </p>
@@ -263,7 +157,6 @@ function CurationPage() {
             Go to Library
           </button>
         </div>
-        )}
       </AppShell>
     );
   }
@@ -276,7 +169,7 @@ function CurationPage() {
       <div className="flex items-end justify-between gap-6">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">AI Curation</div>
-          <h1 className="mt-2 text-[34px] font-bold leading-tight tracking-tight">
+          <h1 className="mt-2 text-2xl font-bold leading-tight tracking-tight md:text-[34px]">
             The best of your year, automatically.
           </h1>
           <p className="mt-1.5 text-sm text-muted-foreground">
@@ -300,15 +193,19 @@ function CurationPage() {
               </span>
             </div>
           </div>
-          <div className="grid grid-cols-5 gap-3">
+          {/* Mobile: horizontal scroll; desktop: 5-col feature grid */}
+          <div className="flex gap-3 overflow-x-auto pb-1 md:grid md:grid-cols-5 md:overflow-visible md:pb-0">
             {highlights.map((r, i) => (
-              <div key={r.file_path} className={i === 0 ? "col-span-2 row-span-2" : ""}>
+              <div
+                key={r.file_path}
+                className={`min-w-[140px] shrink-0 md:min-w-0 md:shrink ${i === 0 ? "min-w-[180px] md:col-span-2 md:row-span-2" : ""}`}
+              >
                 <HighlightCard
                   media={r}
                   decision={decisions[r.file_path]}
                   selected={selected?.file_path === r.file_path}
                   onClick={() => setSelected(r)}
-                  aspectClass={i === 0 ? "aspect-[4/3]" : "aspect-square"}
+                  aspectClass="aspect-square"
                 />
               </div>
             ))}
@@ -317,9 +214,9 @@ function CurationPage() {
       )}
 
       {/* Layout: filters + grid + side panel */}
-      <div className="mt-8 grid grid-cols-[200px_1fr_320px] gap-6">
-        {/* Filter panel */}
-        <aside className="space-y-5">
+      <div className="mt-6 flex flex-col gap-6 md:mt-8 md:grid md:grid-cols-[200px_1fr_320px]">
+        {/* Filter panel — hidden on mobile to save space */}
+        <aside className="hidden space-y-5 md:block">
           <div>
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               Min Memory Score
@@ -442,7 +339,7 @@ function CurationPage() {
               <p className="text-sm">No photos match the current filters.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
               {filtered.map((r) => (
                 <GridCard
                   key={r.file_path}
@@ -580,8 +477,8 @@ function DetailPanel({ media, decision, onKeep, onDelete, onClose }: DetailPanel
   const brightLabel = formatBrightness(media.brightness);
 
   return (
-    <aside className="sticky top-6 h-fit overflow-hidden rounded-2xl border border-border bg-surface-elevated animate-slide-in-right">
-      <div className="relative aspect-[4/3]">
+    <aside className="fixed inset-0 z-50 overflow-y-auto bg-surface-elevated animate-slide-up md:static md:sticky md:top-6 md:h-fit md:overflow-hidden md:rounded-2xl md:border md:border-border md:animate-slide-in-right">
+      <div className="relative aspect-[4/3] md:aspect-[4/3]">
         <img
           src={media.thumbnail_url}
           alt={media.filename}
@@ -638,28 +535,28 @@ function DetailPanel({ media, decision, onKeep, onDelete, onClose }: DetailPanel
           </p>
         </div>
 
-        {/* Keep / Delete buttons */}
+        {/* Keep / Delete buttons — 48px min height for touch */}
         <div className="flex gap-2 pt-1">
           <button
             onClick={onKeep}
-            className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2.5 text-xs font-semibold transition-smooth hover:scale-[1.02] ${
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-3 text-sm font-semibold transition-smooth hover:scale-[1.02] min-h-[48px] md:py-2.5 md:text-xs md:min-h-0 ${
               decision === "keep"
                 ? "bg-primary text-primary-foreground shadow-glow-soft"
                 : "border border-border bg-surface text-muted-foreground hover:bg-accent hover:text-foreground"
             }`}
           >
-            <Check className="h-3.5 w-3.5" strokeWidth={3} />
+            <Check className="h-4 w-4 md:h-3.5 md:w-3.5" strokeWidth={3} />
             {decision === "keep" ? "Kept ✓" : "Keep"}
           </button>
           <button
             onClick={onDelete}
-            className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2.5 text-xs font-semibold transition-smooth hover:scale-[1.02] ${
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-3 text-sm font-semibold transition-smooth hover:scale-[1.02] min-h-[48px] md:py-2.5 md:text-xs md:min-h-0 ${
               decision === "delete"
                 ? "bg-destructive text-destructive-foreground"
                 : "border border-border bg-surface text-muted-foreground hover:bg-accent hover:text-foreground"
             }`}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-4 w-4 md:h-3.5 md:w-3.5" />
             {decision === "delete" ? "Deleted ✓" : "Delete"}
           </button>
         </div>

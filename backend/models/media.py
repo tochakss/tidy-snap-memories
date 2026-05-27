@@ -55,7 +55,12 @@ class ScoreResult(BaseModel):
     brightness_score: float = Field(..., description="Mean luminance 0–255")
     is_blurry: bool
     is_dark: bool
-    overall_score: float = Field(..., description="Composite 0–100 quality score")
+    overall_score: float = Field(..., description="Composite 0–100 quality score, includes content-aware bonuses/penalties")
+    faces_detected: bool = False
+    face_count: int = 0
+    content_type: str = "photo"  # "photo" | "screenshot" | "document"
+    is_outdoor: bool = False
+    is_pet: bool = False
 
 
 class PublishResult(BaseModel):
