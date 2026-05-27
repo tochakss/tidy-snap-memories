@@ -71,16 +71,32 @@ def generate_albums(request: GenerateRequest) -> list[AlbumSuggestion]:
     all_paths = [mf.path for mf in media]
     groups, no_gps = group_photos_by_location(all_paths)
 
-    albums: list[AlbumSuggestion] = []
+    # Geocode every cluster, then merge clusters that share (place, year) so
+    # we never emit two albums with the same name.
+    geo_groups: dict[tuple, dict] = {}
     for g in groups:
         photos = g["photos"]
         clat, clon = g["center_lat"], g["center_lon"]
         place = reverse_geocode(clat, clon)
+        year = datetime.fromtimestamp(min(p["mtime"] for p in photos)).year
+        key = (place, year)
+        if key in geo_groups:
+            ex = geo_groups[key]
+            n_old, n_new = len(ex["photos"]), len(photos)
+            n_tot = n_old + n_new
+            ex["photos"].extend(photos)
+            ex["clat"] = (ex["clat"] * n_old + clat * n_new) / n_tot
+            ex["clon"] = (ex["clon"] * n_old + clon * n_new) / n_tot
+        else:
+            geo_groups[key] = {"photos": photos, "place": place, "year": year,
+                               "clat": clat, "clon": clon}
 
+    albums: list[AlbumSuggestion] = []
+    for (place, year), gdata in geo_groups.items():
+        photos = gdata["photos"]
         mtimes = [p["mtime"] for p in photos]
         earliest = datetime.fromtimestamp(min(mtimes))
         latest = datetime.fromtimestamp(max(mtimes))
-        year = earliest.year
         date_range = (
             earliest.strftime("%b %d, %Y")
             if earliest.date() == latest.date()
@@ -97,8 +113,8 @@ def generate_albums(request: GenerateRequest) -> list[AlbumSuggestion]:
             photo_count=len(photos),
             date_range=date_range,
             location=place,
-            lat=clat,
-            lon=clon,
+            lat=gdata["clat"],
+            lon=gdata["clon"],
             photo_paths=[p["path"] for p in photos],
         ))
 

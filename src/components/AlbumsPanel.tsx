@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   generateAlbums, exportAlbums, getExportProgress, syncAlbums, openFolder,
-  fileUrl,
+  albumFileUrl,
   type AlbumSuggestion, type ExportProgress, type SyncResult,
 } from "@/lib/api";
 
@@ -152,7 +152,7 @@ function AlbumCard({ album, isUnsorted = false }: { album: AlbumSuggestion; isUn
       <div className="relative aspect-[4/3] overflow-hidden bg-muted">
         {cover ? (
           <img
-            src={fileUrl(cover)}
+            src={albumFileUrl(cover)}
             alt={album.album_name}
             loading="lazy"
             className="h-full w-full object-cover transition-smooth group-hover:scale-[1.04]"

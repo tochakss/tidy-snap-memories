@@ -13,6 +13,7 @@ export { detectMode } from "./mode";
 
 const BASE = "http://localhost:8000";
 const DUPES_BASE = "http://localhost:8000";
+const ALBUMS_BASE = "http://localhost:8001";
 
 export interface MediaFile {
   path: string;
@@ -228,7 +229,7 @@ export function generateAlbums(
   if (getCachedMode() === "browser") {
     return Promise.reject(new Error("Album generation requires the local backend."));
   }
-  return api<AlbumSuggestion[]>(`${BASE}/api/albums/generate`, {
+  return api<AlbumSuggestion[]>(`${ALBUMS_BASE}/api/albums/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -246,7 +247,7 @@ export function exportAlbums(
   if (getCachedMode() === "browser") {
     return Promise.reject(new Error("Export requires the local backend."));
   }
-  return api(`${BASE}/api/albums/export`, {
+  return api(`${ALBUMS_BASE}/api/albums/export`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ albums, output_path: outputPath }),
@@ -254,7 +255,7 @@ export function exportAlbums(
 }
 
 export function getExportProgress(): Promise<ExportProgress> {
-  return api<ExportProgress>(`${BASE}/api/albums/export/progress`);
+  return api<ExportProgress>(`${ALBUMS_BASE}/api/albums/export/progress`);
 }
 
 export function syncAlbums(
@@ -265,7 +266,7 @@ export function syncAlbums(
   if (getCachedMode() === "browser") {
     return Promise.reject(new Error("Sync requires the local backend."));
   }
-  return api<SyncResult>(`${BASE}/api/albums/sync`, {
+  return api<SyncResult>(`${ALBUMS_BASE}/api/albums/sync`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source_folder: sourceFolder, organized_folder: organizedFolder, confirmed }),
@@ -273,11 +274,19 @@ export function syncAlbums(
 }
 
 export function openFolder(path: string): Promise<{ opened: string }> {
-  return api(`${BASE}/api/albums/open-folder`, {
+  return api(`${ALBUMS_BASE}/api/albums/open-folder`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
   });
+}
+
+/** Serves a local file from the albums backend (port 8001). */
+export function albumFileUrl(path: string): string {
+  if (getCachedMode() === "browser") {
+    return getBrowserObjectUrl(path);
+  }
+  return `${ALBUMS_BASE}/api/file?path=${encodeURIComponent(path)}`;
 }
 
 export function scoreFile(filePath: string): Promise<ScoreResult> {
